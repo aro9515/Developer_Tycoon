@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useGameStore } from '@/stores/gameStore'
-import { freeForActivity, freeForContract } from '@/core/Game'
+import { freeForActivity, freeForContract, PILOT_DAYS, PILOT_SKILL_MIN, TRAINING_DAYS, trainingBlock } from '@/core/Game'
 import { canChangeRole, canLevelUpRole, HIRE_COST, nextRoleTarget, roleLevel, salaryReviewDue } from '@/core/staff'
 import { ADVANCED_ROLES, BASE_ROLES, DOMAINS, ITEMS, ROLES, MAX_ROLE_LEVEL, ROLE_REQUIREMENTS, SHOP, SKILLS, TRAINING_COURSES, tech, techName, trainingCourse, type Role } from '@/data/rules'
 import type { Employee } from '@/core/types'
@@ -15,10 +15,27 @@ const course = (employee: Employee) => selection.value[employee.id] ?? 'javascri
 const ready = (employee: Employee) => freeForActivity(employee, s.value.weekIndex)
 const salary = (e: Employee) => salaries.value[e.id] ?? e.desiredSalary
 const allowedTechnology = (key: string) => !tech(key)?.expansion || store.stage.deliveries >= 4
-const pilotReady = (e: Employee, key: string) => {
-  const entry = tech(key)
-  return entry ? e.stats[entry.skill] >= 20 && !s.value.company.validated.includes(key) && allowedTechnology(key) &&
-    !s.value.employees.some((member) => member.activity?.kind === 'pilot' && member.activity.target === key) : false
+const trainingMessages: Record<NonNullable<ReturnType<typeof trainingBlock>>, string> = {
+  'game-over': '진행이 종료되었습니다.',
+  'unknown-course': '교육 과정을 선택하세요.',
+  busy: '업무에 배정됐거나 이번 주 작업을 이미 시작했습니다.',
+  stage: '외주 납품 4건 후 열립니다.',
+  'not-technology': '일반 교육 과정으로 파일럿을 진행할 수 없습니다.',
+  skill: '파일럿에 필요한 능력치에 아직 도달하지 못했습니다.',
+  validated: '이미 검증한 기술입니다.',
+  'pilot-in-progress': '다른 직원이 이 기술의 파일럿을 진행 중입니다.',
+}
+
+function educationBlock(employee: Employee, pilot = false): string {
+  const reason = trainingBlock(s.value, employee, course(employee), pilot)
+  return reason ? trainingMessages[reason] : ''
+}
+
+function courseSummary(employee: Employee): string {
+  const entry = trainingCourse(course(employee))
+  if (!entry) return ''
+  const display = Math.floor(employee.stats[entry.skill] * 10) / 10
+  return SKILLS[entry.skill] + ' 현재 ' + display + (tech(entry.key) ? ' · 파일럿 기준 ' + PILOT_SKILL_MIN : '')
 }
 function requirementGroups(role: Role) {
   const advanced = ADVANCED_ROLES.find((candidate) => candidate === role)
@@ -86,10 +103,13 @@ function alertLevel(weeks: number): string {
             </option>
           </select>
         </label>
-        <p class="muted">교육 3일 · 파일럿 4일, {{ SKILLS[trainingCourse(course(e))?.skill ?? 'coding'] }} 20 필요</p>
+        <p>{{ courseSummary(e) }}</p>
+        <p class="muted">교육 {{ TRAINING_DAYS }}일 · 관련 능력치 성장<span v-if="tech(course(e))"> · 파일럿 {{ PILOT_DAYS }}일 · 수료 시 기술 검증과 연구 점수 획득</span></p>
+        <p v-if="educationBlock(e)" class="muted">{{ educationBlock(e) }}</p>
+        <p v-else-if="educationBlock(e, true)" class="muted">{{ educationBlock(e, true) }}</p>
         <div class="controls">
-          <button type="button" class="btn ghost compact" :disabled="!ready(e)" @click="store.play(game => game.startTraining(e.id, course(e)))">교육 배정</button>
-          <button type="button" class="btn ghost compact" :disabled="!ready(e) || !pilotReady(e, course(e))"
+          <button type="button" class="btn ghost compact" :disabled="!!educationBlock(e)" @click="store.play(game => game.startTraining(e.id, course(e)))">교육 배정</button>
+          <button type="button" class="btn ghost compact" :disabled="!!educationBlock(e, true)"
             @click="store.play(game => game.startTraining(e.id, course(e), true))">파일럿 배정</button>
         </div>
       </details>

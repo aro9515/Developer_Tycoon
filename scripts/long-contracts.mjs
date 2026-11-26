@@ -27,7 +27,7 @@ try {
     return { game, state, customer }
   }
 
-  await test('Established clients occasionally propose a single 12-week contract with work estimated separately', () => {
+  await test('Established clients occasionally propose a single 10–12-week contract with work estimated separately', () => {
     const { state, customer } = fixture()
     state.weekIndex = 8
     assert.equal(createLongContractOffer(state), undefined)
@@ -37,9 +37,11 @@ try {
     customer.trust = 75
     const { offer } = createLongContractOffer(state)
     assert.equal(offer.customerId, customer.id)
-    assert.equal(offer.durationTicks, 672)
+    assert.ok(offer.durationTicks >= 560 && offer.durationTicks <= 672)
+    assert.equal(offer.durationTicks % 56, 0)
     assert.ok(offer.longContract.workDays > 15 && offer.longContract.workDays < 84)
-    assert.ok(offer.budget >= 1400 && offer.budget <= 1800)
+    const { labor, overhead, risk, margin } = offer.weeklyTerms
+    assert.equal(offer.budget, labor + overhead + risk + margin)
     assert.equal(offer.source, 'followup')
     assert.equal(createLongContractOffer(state), undefined)
   })
@@ -92,7 +94,7 @@ try {
     assert.ok(xp > 0 && xp < 32)
     assert.equal(longRoleXpGain({ ...project, longContract: undefined }, 1, 0.17), 0.17)
   })
-  await test('Game accepts, verifies, reloads, delivers and releases a 12-week contract exactly once', async () => {
+  await test('Game accepts, verifies, reloads, delivers and releases a long contract exactly once', async () => {
     const { game, state } = fixture()
     const { deserializeGame, serializeGame } = await server.ssrLoadModule('/src/core/save.ts')
     const { offer } = createLongContractOffer(state)
@@ -101,7 +103,7 @@ try {
     const openingCash = state.company.cash
     assert.equal(game.acceptOffer(offer.id, employee.id), true)
     const project = state.projects.at(-1)
-    assert.equal(project.durationTicks, LONG_CONTRACT.durationTicks)
+    assert.equal(project.durationTicks, offer.durationTicks)
     assert.equal(state.company.cash, openingCash + payments.advance)
     assert.equal(game.approveLongContractReview(project.id), false)
 
@@ -161,7 +163,7 @@ try {
       }
     }
   })
-  await test('Normal play can actually deliver a 12-week contract inside its window', () => {
+  await test('Normal play can actually deliver a long contract inside its window', () => {
     const { game, state } = fixture()
     state.company.cash = 5000
     const { offer } = createLongContractOffer(state)

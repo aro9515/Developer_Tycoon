@@ -23,6 +23,12 @@ try {
     for (let index = 0; index < count; index++) { game.setSpeed(1); game.tick() }
     game.setSpeed(0)
   }
+  const finishTutorialInFirstWeek = (game, project) => {
+    const weekTicks = BALANCE.DAYS_PER_WEEK * BALANCE.TICKS_PER_DAY
+    while (project.state !== 'done' && game.state.tick < weekTicks) tick(game, 1)
+    assert.equal(project.state, 'done')
+    assert.equal(game.state.weekIndex, 1)
+  }
   const first = (game) => {
     const player = game.state.employees[0]
     assert.equal(game.acceptOffer(game.state.market[0].id, player.id), true)
@@ -50,8 +56,7 @@ try {
   check('normal delivery frees the same worker for another contract this week', () => {
     const game = new Game(undefined, () => 0.99)
     const { player, project } = first(game)
-    tick(game, 32)
-    assert.equal(project.state, 'done')
+    finishTutorialInFirstWeek(game, project)
     assert.equal(game.state.weekIndex, 1)
     assert.equal(player.assignedProjectId, null)
     const before = { cash: game.state.company.cash, elapsed: project.elapsedTicks, payout: project.payout }
@@ -72,8 +77,7 @@ try {
     const game = new Game(undefined, () => 0.99)
     const { player, project } = first(game)
     assert.equal(game.hireEmployee('backend'), true)
-    tick(game, 32)
-    assert.equal(project.state, 'done')
+    finishTutorialInFirstWeek(game, project)
     const restored = deserializeGame(serializeGame(game))
     const worker = restored.state.employees[1]
     assert.equal(restored.startTraining(player.id, 'linux'), false)
@@ -279,8 +283,7 @@ try {
     const customer = game.state.customers.find((item) => item.id === project.customerId)
     const duplicate = { ...game.state.market[0], id: 'open-fixture', client: project.client, customerId: customer.id }
     game.state.market.push(duplicate)
-    tick(game, 32)
-    assert.equal(project.state, 'done')
+    finishTutorialInFirstWeek(game, project)
     assert.equal(customer.trust, 68)
     assert.equal(customer.closedContracts, 1)
     assert.ok(customer.nextFollowUp)
@@ -312,7 +315,7 @@ try {
   check('older saves keep balances and the existing contracts without retroactive follow-ups', () => {
     const game = new Game(undefined, () => 0.99)
     const { project } = first(game)
-    tick(game, 32)
+    finishTutorialInFirstWeek(game, project)
     const legacy = JSON.parse(serializeGame(game))
     delete legacy.customers
     delete legacy.sales
@@ -320,6 +323,7 @@ try {
       delete item.customerId
       delete item.source
       delete item.customerRecorded
+      delete item.weeklyTerms
     }
     const restored = deserializeGame(JSON.stringify(legacy))
     assert.equal(restored.state.company.cash, legacy.company.cash)

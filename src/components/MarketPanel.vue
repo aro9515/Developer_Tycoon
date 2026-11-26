@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import EmployeeFitDetails from '@/components/EmployeeFitDetails.vue'
 import { useGameStore } from '@/stores/gameStore'
 import { BALANCE } from '@/data/balance'
-import { CLIENT_STYLES, DOMAINS, SKILLS, techName } from '@/data/rules'
+import { CLIENT_STYLES, DOMAINS, ROLES, SKILLS, techName } from '@/data/rules'
 import { longPayments } from '@/core/longContracts'
+import { formatContractDuration } from '@/core/weeklyContracts'
 import {
   effectiveOffer, isOfferNegotiationGoal, isOfferNegotiationPending, offerNegotiationOdds, OFFER_NEGOTIATION_GOALS,
   originalOfferTerms, proposedOfferTerms, type OfferNegotiationGoal, type OfferNegotiationTerms,
 } from '@/core/offerNegotiation'
-import { employeeMatch } from '@/core/project'
 import type { MarketOffer } from '@/core/types'
 
 const store = useGameStore()
+const number = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 })
 const sourceLabels: Record<string, string> = { monthly: '월초 기본 의뢰', promotion: '홍보 신규 의뢰', followup: '기존 고객 후속 의뢰' }
 const outcomeLabels = { success: '고객이 조정안을 제안했습니다.', fail: '협상 결렬 · 고객이 원안을 유지합니다.', critical: '대실패 · 고객이 더 불리한 조건을 역제안했습니다.' }
 const decisionLabels = { pending: '', accepted: '협상안 선택됨 · 아래에서 계약을 수락하세요.', rejected: '협상안 거절 · 원안으로 수락할 수 있습니다.', original: '' }
@@ -21,31 +23,26 @@ function selection(offer: MarketOffer) {
   return choice.value[offer.id] ??= {}
 }
 
-function assignee(offer: MarketOffer): string {
-  const id = selection(offer).employee
-  return store.contractCandidates.find((employee) => employee.id === id)?.id ?? store.contractCandidates[0]?.id ?? ''
+function assignee(offer: MarketOffer) {
+  const id = choice.value[offer.id]?.employee
+  return store.contractCandidates.find((employee) => employee.id === id) ?? store.contractCandidates[0]
 }
 
 function negotiator(offer: MarketOffer) {
-  const id = selection(offer).negotiator ?? assignee(offer)
+  const id = choice.value[offer.id]?.negotiator ?? assignee(offer)?.id
   return store.contractCandidates.find((employee) => employee.id === id) ?? store.contractCandidates[0]
 }
 
 function selectedTech(offer: MarketOffer): string {
   const negotiation = offer.offerNegotiation
   if (negotiation?.decision === 'pending' || negotiation?.decision === 'accepted') return negotiation.technology
-  const alternative = selection(offer).tech
+  const alternative = choice.value[offer.id]?.tech
   return alternative && offer.alternatives.includes(alternative) && store.snapshot.company.validated.includes(alternative)
     ? alternative : offer.technology
 }
 
-function match(offer: MarketOffer): string {
-  const employee = store.contractCandidates.find((member) => member.id === assignee(offer))
-  return employee ? Math.round(employeeMatch(employee, { ...effectiveOffer(offer), technology: selectedTech(offer) }) * 100) + '%' : '—'
-}
-
 function goal(offer: MarketOffer): OfferNegotiationGoal {
-  return selection(offer).goal ?? 'schedule'
+  return choice.value[offer.id]?.goal ?? 'schedule'
 }
 
 function changeGoal(offer: MarketOffer, event: Event): void {
@@ -53,9 +50,24 @@ function changeGoal(offer: MarketOffer, event: Event): void {
   if (isOfferNegotiationGoal(value)) selection(offer).goal = value
 }
 
-function odds(offer: MarketOffer) {
+const negotiationPreviews = computed(() => Object.fromEntries(store.snapshot.market.map((offer) => {
   const employee = negotiator(offer)
-  return employee ? offerNegotiationOdds(offer, employee, store.snapshot.company.trust, goal(offer), selectedTech(offer)) : null
+  if (!employee) return [offer.id, null] as const
+  const odds = offerNegotiationOdds(offer, employee, store.snapshot.company.trust, goal(offer), selectedTech(offer))
+  return [offer.id, { ...odds, skillValue: employee.stats[odds.skill] }] as const
+})))
+
+function negotiationBlock(offer: MarketOffer): string {
+  if (store.snapshot.gameOver) return '운영 종료 · 협상할 수 없습니다.'
+  return negotiator(offer) ? '' : '이번 주에 협상 가능한 직원이 없습니다.'
+}
+
+function acceptanceBlock(offer: MarketOffer): string {
+  if (store.snapshot.gameOver) return '운영 종료 · 새 계약을 받을 수 없습니다.'
+  if (isOfferNegotiationPending(offer)) return '협상안을 선택하거나 거절한 뒤 수락할 수 있습니다.'
+  if (store.activeProjects.length >= store.snapshot.company.projectSlots) return '동시 계약 한도가 찼습니다.'
+  if (!assignee(offer)) return '이번 주에 배정 가능한 담당자가 없습니다.'
+  return ''
 }
 
 function negotiate(offer: MarketOffer): void {
@@ -64,12 +76,14 @@ function negotiate(offer: MarketOffer): void {
 }
 
 function displayedDeadline(offer: MarketOffer, ticks: number, technology: string): string {
-  if (offer.longContract) return '12주'
-  const pilot = technology === offer.technology ? 0 : BALANCE.TICKS_PER_DAY
-  return Math.ceil((ticks + pilot) / BALANCE.TICKS_PER_DAY) + '일'
+  const pilot = offer.longContract || technology === offer.technology ? 0 : BALANCE.TICKS_PER_DAY
+  return offer.weeklyTerms || offer.longContract
+    ? formatContractDuration(ticks + pilot)
+    : Math.ceil((ticks + pilot) / BALANCE.TICKS_PER_DAY) + '일'
 }
 
 function workload(offer: MarketOffer, terms: OfferNegotiationTerms): string {
+  if (offer.weeklyTerms) return number.format(offer.weeklyTerms.personWeeks * terms.workMultiplier) + '인주'
   return offer.longContract
     ? '약 ' + Math.ceil(offer.longContract.workDays * terms.workMultiplier) + '인일'
     : Math.round(terms.workMultiplier * 100) + '%'
@@ -81,6 +95,11 @@ function compareTerms(offer: MarketOffer) {
     { label: '원안', terms: originalOfferTerms(offer) },
     { label: negotiation?.outcome === 'critical' ? '고객 역제안' : negotiation ? '협상안' : '성공 시 제안', terms: negotiation?.proposal ?? proposedOfferTerms(offer, goal(offer)) },
   ]
+}
+
+function displayedTerms(offer: MarketOffer): OfferNegotiationTerms {
+  const negotiation = offer.offerNegotiation
+  return negotiation?.decision === 'accepted' && negotiation.proposal ? negotiation.proposal : originalOfferTerms(offer)
 }
 
 function advance(offer: MarketOffer): number {
@@ -106,12 +125,27 @@ function advance(offer: MarketOffer): number {
         <span class="tag">{{ offer.alternatives.length ? '기술 선택 가능' : '기술 지정' }}</span>
         <span class="tag" :class="{ warn: offer.source && offer.source !== 'monthly' }">{{ sourceLabels[offer.source ?? 'monthly'] ?? '기존 고객 후속 의뢰' }}</span>
         <span v-if="customerTrust(offer) !== undefined" class="tag">고객 신뢰 {{ customerTrust(offer) }}/100</span>
-        <span v-if="offer.longContract" class="tag warn">3개월 계약</span>
+        <span v-if="offer.longContract" class="tag warn">{{ offer.weeklyTerms ? '장기 계약' : '3개월 계약' }}</span>
       </div>
+      <p v-if="offer.weeklyTerms" class="muted">
+        표준 작업량 {{ workload(offer, displayedTerms(offer)) }} · 실제 진행은 투입 인원과 적합도에 따라 달라집니다.
+      </p>
       <p v-if="offer.longContract" class="muted">
-        예상 공수 {{ workload(offer, offer.offerNegotiation?.decision === 'accepted' && offer.offerNegotiation.proposal ? offer.offerNegotiation.proposal : originalOfferTerms(offer)) }} · 인원과 숙련도에 따라 달라짐.
+        <template v-if="!offer.weeklyTerms">예상 공수 {{ workload(offer, displayedTerms(offer)) }} · 인원과 숙련도에 따라 달라짐.</template>
         착수 {{ longPayments(effectiveOffer(offer).budget).advance }} / 중간 검수 {{ longPayments(effectiveOffer(offer).budget).middle }} / 최종 납품 기준 {{ longPayments(effectiveOffer(offer).budget).final }}pt
       </p>
+      <details v-if="offer.weeklyTerms">
+        <summary>원안 산정 내역</summary>
+        <p class="muted">
+          인건비 {{ number.format(offer.weeklyTerms.labor) }}pt · 간접비 {{ number.format(offer.weeklyTerms.overhead) }}pt ·
+          위험 {{ number.format(offer.weeklyTerms.risk) }}pt · 마진 {{ number.format(offer.weeklyTerms.margin) }}pt
+        </p>
+        <ul class="staffing-quote muted" aria-label="표준 인력 원가">
+          <li v-for="row in offer.weeklyTerms.staffing" :key="row.role">
+            {{ ROLES[row.role] }} {{ number.format(row.personWeeks) }}인주 × 주급 {{ row.weeklyWage }}pt
+          </li>
+        </ul>
+      </details>
       <div class="fields">
         <label>기술
           <select :value="selectedTech(offer)" :disabled="isOfferNegotiationPending(offer) || offer.offerNegotiation?.decision === 'accepted'" @change="selection(offer).tech = ($event.target as HTMLSelectElement).value">
@@ -122,13 +156,15 @@ function advance(offer: MarketOffer): number {
           </select>
         </label>
         <label>담당자
-          <select :value="assignee(offer)" @change="selection(offer).employee = ($event.target as HTMLSelectElement).value">
+          <select :value="assignee(offer)?.id ?? ''" @change="selection(offer).employee = ($event.target as HTMLSelectElement).value">
             <option v-if="!store.contractCandidates.length" value="">배정 가능 인원 없음</option>
             <option v-for="e in store.contractCandidates" :key="e.id" :value="e.id">{{ e.name }}</option>
           </select>
         </label>
       </div>
-      <p class="muted">업무 적합도 {{ match(offer) }}</p>
+      <EmployeeFitDetails v-if="assignee(offer)" :employee="assignee(offer)!"
+        :work="{ requirements: effectiveOffer(offer).requirements, technology: selectedTech(offer) }"
+        summary="담당자 능력치·적합 근거" context="이번 주 배정 가능" />
       <details class="negotiation">
         <summary>수주 전 협상{{ isOfferNegotiationPending(offer) ? ' · 결정 대기' : '' }}</summary>
         <div class="stack">
@@ -147,9 +183,12 @@ function advance(offer: MarketOffer): number {
                 </select>
               </label>
             </div>
-            <p v-if="odds(offer)" class="muted">
-              {{ SKILLS[odds(offer)!.skill] }} 기준 · 성공 {{ odds(offer)!.success }}% · 실패 {{ odds(offer)!.fail }}% · 대실패 {{ odds(offer)!.critical }}%
+            <p v-if="negotiationPreviews[offer.id]" class="muted">
+              {{ SKILLS[negotiationPreviews[offer.id]!.skill] }} 현재 {{ number.format(negotiationPreviews[offer.id]!.skillValue) }} ·
+              회사 신뢰 {{ store.snapshot.company.trust }}/100 ·
+              성공 {{ negotiationPreviews[offer.id]!.success }}% · 실패 {{ negotiationPreviews[offer.id]!.fail }}% · 대실패 {{ negotiationPreviews[offer.id]!.critical }}%
             </p>
+            <p v-if="negotiationBlock(offer)" :id="'negotiation-block-' + offer.id" class="muted">{{ negotiationBlock(offer) }}</p>
           </template>
           <div v-else class="notice" role="status">
             <p>{{ outcomeLabels[offer.offerNegotiation.outcome] }}</p>
@@ -162,14 +201,15 @@ function advance(offer: MarketOffer): number {
               <p>납기 {{ displayedDeadline(offer, item.terms.durationTicks, offer.offerNegotiation?.technology ?? selectedTech(offer)) }}</p>
               <p>{{ item.terms.scope }}</p>
               <p v-for="requirement in item.terms.requirements" :key="requirement.skill" class="muted">{{ SKILLS[requirement.skill] }} {{ requirement.amount }}</p>
-              <p>예상 공수 {{ workload(offer, item.terms) }}</p>
+              <p>{{ offer.weeklyTerms ? '표준 작업량' : '예상 공수' }} {{ workload(offer, item.terms) }}</p>
               <p>기술부채 위험 {{ Math.round(item.terms.debtMultiplier * 100) }}%</p>
             </div>
           </div>
           <p v-if="offer.offerNegotiation?.outcome === 'success' && offer.offerNegotiation.decision !== 'rejected'" class="muted">
             조정안으로 수주하면 협상 담당자가 노하우와 직위 XP를 얻습니다. 성공적으로 납품하면 {{ SKILLS[offer.offerNegotiation.skill] }} 능력치도 오릅니다.
           </p>
-          <button v-if="!offer.offerNegotiation" class="btn ghost" type="button" :disabled="!negotiator(offer)"
+          <button v-if="!offer.offerNegotiation" class="btn ghost" type="button" :disabled="Boolean(negotiationBlock(offer))"
+            :aria-describedby="negotiationBlock(offer) ? 'negotiation-block-' + offer.id : undefined"
             @click="negotiate(offer)">협상 제안 보내기</button>
           <div v-else-if="isOfferNegotiationPending(offer)" class="controls">
             <button type="button" class="btn compact" @click="store.play(game => game.resolveOfferNegotiation(offer.id, true))">협상안 선택</button>
@@ -177,8 +217,10 @@ function advance(offer: MarketOffer): number {
           </div>
         </div>
       </details>
-      <button class="btn" type="button" :disabled="!assignee(offer) || isOfferNegotiationPending(offer) || store.activeProjects.length >= store.snapshot.company.projectSlots"
-        @click="store.acceptOffer(offer.id, assignee(offer), selectedTech(offer))">
+      <p v-if="acceptanceBlock(offer)" :id="'acceptance-block-' + offer.id" class="muted">{{ acceptanceBlock(offer) }}</p>
+      <button class="btn" type="button" :disabled="Boolean(acceptanceBlock(offer))"
+        :aria-describedby="acceptanceBlock(offer) ? 'acceptance-block-' + offer.id : undefined"
+        @click="store.acceptOffer(offer.id, assignee(offer)?.id ?? '', selectedTech(offer))">
         수락 · 착수금 ₩{{ advance(offer).toLocaleString() }}
       </button>
     </article>
@@ -197,5 +239,8 @@ function advance(offer: MarketOffer): number {
 }
 .negotiation > .stack {
   padding-top: 0.5rem;
+}
+.staffing-quote {
+  padding-left: 1.25rem;
 }
 </style>

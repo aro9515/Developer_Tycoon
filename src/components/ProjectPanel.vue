@@ -1,18 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useGameStore } from '@/stores/gameStore'
-import { freeForActivity, freeForContract, negotiationOdds, outsourcePrice } from '@/core/Game'
-import { canReview, isActive } from '@/core/project'
+import { assignmentBlock, freeForActivity, negotiationOdds, outsourcePrice } from '@/core/Game'
+import { canReview, employeeMatch, isActive } from '@/core/project'
 import { LONG_CONTRACT, longPayments, longReviewReady, waitingForLongReview } from '@/core/longContracts'
 import { BALANCE } from '@/data/balance'
-import { techName } from '@/data/rules'
-import type { Project } from '@/core/types'
+import { ROLES, techName } from '@/data/rules'
+import { roleLevel } from '@/core/staff'
+import { formatContractDuration } from '@/core/weeklyContracts'
+import type { Employee, Project } from '@/core/types'
+import EmployeeFitDetails from '@/components/EmployeeFitDetails.vue'
 
 const store = useGameStore()
 const s = computed(() => store.snapshot)
 const history = computed(() => s.value.projects.filter(p => !isActive(p)).slice(-8).reverse())
 const repairs = computed(() => s.value.projects.filter(p => !isActive(p) && (p.issue || p.debt >= 1)))
 const picks = ref<Record<string, string>>({})
+const lastAssigned = ref<Record<string, string>>({})
 const repairPicks = ref<Record<string, string>>({})
 const emergency = ref<Record<string, boolean>>({})
 const research = ref<Record<string, boolean>>({})
@@ -31,7 +35,54 @@ const trust = (p: Project) => s.value.customers.find((customer) => customer.id =
 const name = (id: string) => s.value.employees.find(e => e.id === id)?.name ?? '미배정'
 const days = (ticks: number) => Math.ceil(Math.max(0, ticks) / BALANCE.TICKS_PER_DAY)
 const candidates = (p: Project) => s.value.employees.filter(e => !p.assigneeIds.includes(e.id))
-const assignee = (p: Project) => candidates(p).find(e => e.id === picks.value[p.id])?.id ?? candidates(p)[0]?.id ?? ''
+const assignee = (p: Project) => candidates(p).find(e => e.id === picks.value[p.id]) ?? candidates(p)[0]
+const assigned = (p: Project) => p.assigneeIds.flatMap(id => {
+  const employee = s.value.employees.find(e => e.id === id)
+  return employee ? [employee] : []
+})
+const roleLabel = (e: Employee) => ROLES[e.role] + ' Lv.' + roleLevel(e)
+const formatWeeks = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 })
+const personWeeks = (p: Project) => p.weeklyTerms
+  ? formatWeeks.format(p.weeklyTerms.personWeeks * (p.acceptedOfferNegotiation?.workMultiplier ?? 1))
+  : ''
+const assignmentMessages = {
+  'game-over': '회사 운영이 종료되어 배정할 수 없습니다.',
+  'last-assignee': '마지막 담당자입니다. 후임을 먼저 배정하세요.',
+  'worked-this-week': '진행한 주간 활동을 바꾸려면 긴급 재배정을 선택하세요.',
+}
+function restriction(e: Employee, p: Project, target?: Project): string {
+  const reason = assignmentBlock(s.value, e, target, Boolean(emergency.value[p.id]))
+  return reason ? assignmentMessages[reason] : ''
+}
+function allocation(e: Employee): string {
+  if (e.assignedProjectId) {
+    const title = s.value.projects.find(p => p.id === e.assignedProjectId)?.title
+    return title ? title + ' 배정 중' : '프로젝트 배정 중'
+  }
+  const support = s.value.enterprise.support
+  if (support.week === s.value.weekIndex && support.employeeIds.includes(e.id)) return '솔루션 고객 지원 배정 중'
+  if (e.activity?.kind === 'repair') return '유지보수 배정 중'
+  if (e.activity) {
+    const activity = e.activity.kind === 'pilot' ? ' 파일럿' : ' 교육'
+    return techName(e.activity.target) + activity + (e.activity.progress > 0 ? ' 중' : ' 배정 중')
+  }
+  if (e.workedWeek === s.value.weekIndex) return '이번 주 활동 진행 이력 있음'
+  return '현재 배정 없음'
+}
+function canAssignLabel(e: Employee, p: Project): string {
+  const blocked = restriction(e, p, p)
+  if (blocked) return blocked
+  if (assignmentBlock(s.value, e, p) === 'worked-this-week') return '긴급 재배정 가능'
+  if (e.assignedProjectId || e.activity) return '현재 배정을 바꿔 합류 가능'
+  if (e.contractAvailableWeek === s.value.weekIndex) return '이전 납품 완료 · 바로 배정 가능'
+  return '바로 배정 가능'
+}
+function assign(p: Project): void {
+  const employee = assignee(p)
+  if (employee && store.play(game => game.assignEmployee(employee.id, p.id, Boolean(emergency.value[p.id])))) {
+    lastAssigned.value[p.id] = employee.id
+  }
+}
 const repairer = (p: Project) => store.freeEmployees.find(e => e.id === repairPicks.value[p.id])?.id ?? store.freeEmployees[0]?.id ?? ''
 const negotiator = (p: Project) => s.value.employees.filter(e => e.role === 'pm' &&
   (e.assignedProjectId === p.id || freeForActivity(e, s.value.weekIndex)))
@@ -59,24 +110,42 @@ function negotiate(p: Project, goal: 'time' | 'scope'): void {
       <div class="split"><h2>{{ p.title }}</h2><span class="tag">{{ stateLabel[p.state] }}</span></div>
       <p class="muted">{{ p.client }} · {{ techName(p.technology) }} · 진행 {{ Math.min(100, Math.floor(p.progress)) }}%<span v-if="trust(p) !== undefined"> · 고객 신뢰 {{ trust(p) }}/100</span></p>
       <progress :value="Math.min(100, p.progress)" max="100" :aria-label="p.title + ' 진척도'" />
-      <p>납기 {{ p.elapsedTicks > p.durationTicks ? days(p.elapsedTicks - p.durationTicks) + '일 지연' : '약 ' + days(p.durationTicks - p.elapsedTicks) + '일 남음' }} · 버그 {{ Math.floor(p.bugs) }} · 부채 {{ Math.floor(p.debt) }} DP</p>
+      <p>납기 {{ p.elapsedTicks > p.durationTicks ? formatContractDuration(p.elapsedTicks - p.durationTicks) + ' 지연' : formatContractDuration(p.durationTicks - p.elapsedTicks) + ' 남음' }} · 버그 {{ Math.floor(p.bugs) }} · 부채 {{ Math.floor(p.debt) }} DP</p>
+      <p v-if="p.weeklyTerms" class="muted">
+        계약 납기 {{ formatContractDuration(p.durationTicks) }} · 표준 작업량 {{ personWeeks(p) }}인주 · 계약액 {{ p.budget.toLocaleString() }}pt
+      </p>
       <p v-if="p.longContract" class="muted">
-        3개월 계약 · 예상 공수 약 {{ p.longContract.workDays }}인일 · 착수 {{ p.advance }}pt / 중간 {{ longPayments(p.budget).middle }}pt / 납품 {{ longPayments(p.budget).final }}pt
+        {{ p.weeklyTerms ? '장기 계약' : '3개월 계약' }}<span v-if="!p.weeklyTerms"> · 예상 공수 약 {{ p.longContract.workDays }}인일</span>
+        · 착수 {{ p.advance }}pt / 중간 {{ longPayments(p.budget).middle }}pt / 납품 {{ longPayments(p.budget).final }}pt
       </p>
       <p v-if="!p.assigneeIds.length" class="notice warn">담당자가 없습니다. 납기까지 후임이 없으면 계약 실패입니다.</p>
-      <div v-for="id in p.assigneeIds" :key="id" class="split">
-        <span>{{ name(id) }}<small v-if="s.employees.find(e => e.id === id)?.handover"> · 인수인계 중</small></span>
-        <button class="btn ghost compact" type="button" :disabled="p.assigneeIds.length < 2"
-          @click="store.play(game => game.assignEmployee(id, null, Boolean(emergency[p.id])))">배정 해제</button>
+      <div v-else class="team-members" role="region" aria-label="현재 담당자">
+        <div v-for="e in assigned(p)" :key="e.id" class="member-row">
+          <details :open="lastAssigned[p.id] === e.id || undefined">
+            <summary><span>{{ e.name }} · {{ roleLabel(e) }}</span><small v-if="e.handover"> · 인수인계 중</small></summary>
+            <EmployeeFitDetails :employee="e" :work="p" context="이 프로젝트 배정 중" />
+          </details>
+          <button class="btn ghost compact" type="button" :disabled="Boolean(restriction(e, p))"
+            :aria-describedby="restriction(e, p) ? p.id + '-' + e.id + '-release' : undefined"
+            @click="store.play(game => game.assignEmployee(e.id, null, Boolean(emergency[p.id])))">배정 해제</button>
+          <p v-if="restriction(e, p)" :id="p.id + '-' + e.id + '-release'" class="muted">{{ restriction(e, p) }}</p>
+        </div>
       </div>
       <div v-if="candidates(p).length" class="controls">
         <label class="grow">추가 담당자
-          <select :value="assignee(p)" @change="picks[p.id] = ($event.target as HTMLSelectElement).value">
-            <option v-for="e in candidates(p)" :key="e.id" :value="e.id">{{ e.name }}{{ (p.isProduct ? freeForActivity(e, s.weekIndex) : freeForContract(e, s.weekIndex)) ? '' : ' · 활동 배정됨' }}</option>
+          <select :value="assignee(p)?.id" @change="picks[p.id] = ($event.target as HTMLSelectElement).value">
+            <option v-for="e in candidates(p)" :key="e.id" :value="e.id">
+              {{ e.name }} · {{ roleLabel(e) }} · {{ Math.round(employeeMatch(e, p) * 100) }}%{{ restriction(e, p, p) ? ' · 제한' : '' }}
+            </option>
           </select>
         </label>
-        <button class="btn ghost compact" type="button" :disabled="!assignee(p)"
-          @click="store.play(game => game.assignEmployee(assignee(p), p.id, Boolean(emergency[p.id])))">배정</button>
+        <button class="btn ghost compact" type="button" :disabled="!assignee(p) || Boolean(restriction(assignee(p)!, p, p))"
+          :aria-describedby="assignee(p) ? p.id + '-availability' : undefined"
+          @click="assign(p)">배정</button>
+      </div>
+      <div v-if="assignee(p)" class="candidate-card" role="region" aria-label="선택한 후보">
+        <EmployeeFitDetails :key="assignee(p)!.id" :employee="assignee(p)!" :work="p" :context="allocation(assignee(p)!)" />
+        <p :id="p.id + '-availability'" class="muted" aria-live="polite">{{ canAssignLabel(assignee(p)!, p) }}</p>
       </div>
       <button v-if="store.stage.index >= 3" class="btn ghost compact" type="button"
         :disabled="!store.contractCandidates.length || p.assigneeIds.length >= 4"
@@ -94,7 +163,7 @@ function negotiate(p: Project, goal: 'time' | 'scope'): void {
       <div v-if="p.scopePending" :id="'scope-' + p.id" class="notice stack" tabindex="-1" role="region" aria-label="고객 범위 변경 안내">
         <strong>고객이 추가 작업을 요청했습니다</strong>
         <p>모든 범위 변경 요청에 답할 때까지 시간이 멈춥니다.</p>
-        <p v-if="p.longContract" class="muted">수락 시 보상이 15% 늘고 단계별 지급액이 조정됩니다. 12주 납기 안에 추가 범위를 검증해야 합니다.</p>
+        <p v-if="p.longContract" class="muted">수락 시 보상이 15% 늘고 단계별 지급액이 조정됩니다. {{ formatContractDuration(p.durationTicks) }} 납기 안에 추가 범위를 검증해야 합니다.</p>
         <p v-else class="muted">수락 시 보상 15% 증가, 납기 1일 연장, 추가 검증이 필요합니다.</p>
         <div class="controls">
           <button class="btn compact" type="button" @click="store.play(game => game.resolveScope(p.id, true))">변경 수락</button>
@@ -102,7 +171,7 @@ function negotiate(p: Project, goal: 'time' | 'scope'): void {
         </div>
       </div>
 
-      <div v-if="waitingForLongReview(p)" class="notice stack" role="region" aria-label="3개월 계약 중간 검수">
+      <div v-if="waitingForLongReview(p)" class="notice stack" role="region" :aria-label="p.weeklyTerms ? '장기 계약 중간 검수' : '3개월 계약 중간 검수'">
         <strong>중간 검수 대기</strong>
         <p v-if="p.elapsedTicks < LONG_CONTRACT.checkpointEarliestTicks">
           고객 검수까지 {{ days(LONG_CONTRACT.checkpointEarliestTicks - p.elapsedTicks) }}일 남았습니다.
@@ -161,7 +230,35 @@ function negotiate(p: Project, goal: 'time' | 'scope'): void {
             <button class="btn ghost compact" type="button" :disabled="s.company.cash < outsourcePrice(p)" @click="store.play(game => game.outsourceRepair(p.id))">외주 ₩{{ outsourcePrice(p) }}</button>
           </div>
         </template>
+
+<style scoped>
+.team-members { display: grid; gap: 0.5rem; }
+.member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.3rem 0.5rem;
+}
+.member-row > details { min-width: 0; }
+.member-row > details > summary { overflow-wrap: anywhere; }
+.member-row > p { grid-column: 1 / -1; }
+.candidate-card { min-width: 0; display: grid; gap: 0.4rem; padding: 0.55rem 0.65rem; border: 1px solid var(--line); border-radius: 0.5rem; }
+</style>
       </template>
+
+<style scoped>
+.team-members { display: grid; gap: 0.5rem; }
+.member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.3rem 0.5rem;
+}
+.member-row > details { min-width: 0; }
+.member-row > details > summary { overflow-wrap: anywhere; }
+.member-row > p { grid-column: 1 / -1; }
+.candidate-card { min-width: 0; display: grid; gap: 0.4rem; padding: 0.55rem 0.65rem; border: 1px solid var(--line); border-radius: 0.5rem; }
+</style>
       <button v-else class="btn ghost compact" type="button" @click="store.play(game => game.requestRepair(p.id))">예방 리팩토링 요청</button>
     </article>
 
@@ -172,3 +269,17 @@ function negotiate(p: Project, goal: 'time' | 'scope'): void {
     </article>
   </section>
 </template>
+
+<style scoped>
+.team-members { display: grid; gap: 0.5rem; }
+.member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.3rem 0.5rem;
+}
+.member-row > details { min-width: 0; }
+.member-row > details > summary { overflow-wrap: anywhere; }
+.member-row > p { grid-column: 1 / -1; }
+.candidate-card { min-width: 0; display: grid; gap: 0.4rem; padding: 0.55rem 0.65rem; border: 1px solid var(--line); border-radius: 0.5rem; }
+</style>

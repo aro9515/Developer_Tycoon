@@ -10,6 +10,7 @@ import { advanceSales, emptySales, gameMonth, initializeCustomers, linkOffer, re
 import { canReview, isActive, offerToProject, setMode, settleProject, tickProject } from './project'
 import { canChangeRole, canLevelUpRole, createEmployee, gainRoleXp, HIRE_COST, reviewYear, roleLevel, salaryReviewDue, skillRole } from './staff'
 import { clamp, uid } from './utils'
+import { formatContractDuration, WEEK_TICKS } from './weeklyContracts'
 import {
   advanceEnterpriseDay, emptyEnterprise, enterpriseProgress, initializeEnterprise, legacyProductProjects,
   quoteOutsourceCampaign, runEnterpriseAction, settleEnterpriseWeek, type AdChannel, type EnterpriseAction,
@@ -28,7 +29,9 @@ import {
 } from './offerNegotiation'
 
 export const SAVE_VERSION = 2
-const WEEK_TICKS = BALANCE.DAYS_PER_WEEK * BALANCE.TICKS_PER_DAY
+export const TRAINING_DAYS = 3
+export const PILOT_DAYS = 4
+export const PILOT_SKILL_MIN = 20
 const OUTSOURCE_TIME = BALANCE.TICKS_PER_DAY * 2
 const EMPTY_ITEMS = { meal: 0, book: 0, voucher: 0 }
 const INITIAL_STOCK = { meal: SHOP.meal.stock, book: SHOP.book.stock, voucher: SHOP.voucher.stock }
@@ -72,6 +75,34 @@ export function freeForActivity(employee: Employee, week: number): boolean {
 export function freeForContract(employee: Employee, week: number): boolean {
   return !employee.assignedProjectId && !employee.activity &&
     (employee.workedWeek !== week || employee.contractAvailableWeek === week)
+}
+
+export function assignmentBlock(
+  state: GameSnapshot, employee: Employee, target: Project | undefined, emergency = false,
+): 'game-over' | 'last-assignee' | 'worked-this-week' | null {
+  if (state.gameOver) return 'game-over'
+  if (target && employee.assignedProjectId === target.id) return null
+  const previous = state.projects.find((project) => project.id === employee.assignedProjectId)
+  if (previous && isActive(previous) && previous.assigneeIds.length === 1) return 'last-assignee'
+  const canJoinContract = target && !target.isProduct && freeForContract(employee, state.weekIndex)
+  if (employee.workedWeek === state.weekIndex && !emergency && !canJoinContract) return 'worked-this-week'
+  return null
+}
+
+export function trainingBlock(
+  state: GameSnapshot, employee: Employee, technology: string, pilot = false,
+): 'game-over' | 'unknown-course' | 'busy' | 'stage' | 'not-technology' | 'skill' | 'validated' | 'pilot-in-progress' | null {
+  const entry = trainingCourse(technology)
+  if (!entry) return 'unknown-course'
+  if (state.gameOver) return 'game-over'
+  if (!freeForActivity(employee, state.weekIndex)) return 'busy'
+  if (entry.expansion && companyStage(state.projects).deliveries < 4) return 'stage'
+  if (!pilot) return null
+  if (!tech(technology)) return 'not-technology'
+  if (employee.stats[entry.skill] < PILOT_SKILL_MIN) return 'skill'
+  if (state.company.validated.includes(technology)) return 'validated'
+  if (state.employees.some((member) => member.activity?.kind === 'pilot' && member.activity.target === technology)) return 'pilot-in-progress'
+  return null
 }
 
 export function productDomains(projects: Project[]): Domain[] {
@@ -280,17 +311,13 @@ export class Game {
     if (!employee || (projectId && (!target || !isActive(target)))) return false
     if (projectId && employee.assignedProjectId === projectId) return true
 
+    const blocked = assignmentBlock(this.state, employee, target, emergency)
+    if (blocked) {
+      if (blocked === 'last-assignee') this.pushToast('마지막 담당자입니다. 후임을 먼저 배정하세요.')
+      if (blocked === 'worked-this-week') this.pushToast('진행한 주간 활동을 바꾸려면 긴급 재배정을 선택하세요.')
+      return false
+    }
     const previous = employee.assignedProjectId ? this.project(employee.assignedProjectId) : undefined
-    if (previous && isActive(previous) && previous.assigneeIds.length === 1) {
-      this.pushToast('마지막 담당자입니다. 후임을 먼저 배정하세요.')
-      return false
-    }
-    const canJoinContract = target && !target.isProduct && freeForContract(employee, this.state.weekIndex)
-    if (employee.workedWeek === this.state.weekIndex && !emergency && !canJoinContract) {
-      this.pushToast('진행한 주간 활동을 바꾸려면 긴급 재배정을 선택하세요.')
-      return false
-    }
-
     if (previous) previous.assigneeIds = previous.assigneeIds.filter((id) => id !== employee.id)
     this.clearActivity(employee)
     employee.handover = null
@@ -416,14 +443,10 @@ export class Game {
 
   startTraining(id: string, technology: string, pilot = false): boolean {
     const employee = this.employee(id)
-    const entry = trainingCourse(technology)
     const s = this.state
-    if (!employee || !entry || s.gameOver || !freeForActivity(employee, s.weekIndex)) return false
-    if (entry.expansion && companyStage(s.projects).deliveries < 4) return false
-    if (pilot && (!tech(technology) || employee.stats[entry.skill] < 20 || s.company.validated.includes(technology) ||
-      s.employees.some((member) => member.activity?.kind === 'pilot' && member.activity.target === technology))) return false
+    if (!employee || trainingBlock(s, employee, technology, pilot)) return false
     employee.activity = { kind: pilot ? 'pilot' : 'training', target: technology,
-      progress: 0, duration: (pilot ? 4 : 3) * BALANCE.TICKS_PER_DAY, voucher: false }
+      progress: 0, duration: (pilot ? PILOT_DAYS : TRAINING_DAYS) * BALANCE.TICKS_PER_DAY, voucher: false }
     this.record('training', 'started', { employeeId: employee.id, technology, mode: pilot ? 'pilot' : 'training' })
     return true
   }
@@ -632,7 +655,7 @@ export class Game {
       customerId: customer?.id, trust: customer?.trust,
       technology: project.technology, domain: project.domain, mode: project.mode, amount: project.payout,
       duration: project.elapsedTicks, debt: project.debt })
-    if (overdue) this.pushToast('12주 납기 초과 · 계약 실패')
+    if (overdue) this.pushToast(formatContractDuration(project.durationTicks) + ' 납기 초과 · 계약 실패')
     else if (vacancy) this.pushToast('기한까지 후임 미배정 · 계약 실패')
     else if (project.isProduct && project.state === 'done') this.pushToast(project.title + ' 출시 · 자사 솔루션에서 시범 도입 및 판매 가능')
     else this.pushToast(project.title + ' 정산 · 잔금 ' + project.payout)
@@ -808,7 +831,7 @@ export class Game {
         customerId: customer.id, trust: customer.trust, amount: offer.budget,
         technology: offer.technology, domain: offer.domain,
       })
-      this.pushToast(customer.name + (offer.longContract ? ' · 3개월 의뢰 제안' : offer.source === 'promotion' ? ' · 홍보 신규 의뢰' : ' · 후속 의뢰'))
+      this.pushToast(customer.name + (offer.longContract ? ' · ' + formatContractDuration(offer.durationTicks) + ' 장기 의뢰 제안' : offer.source === 'promotion' ? ' · 홍보 신규 의뢰' : ' · 후속 의뢰'))
     }
 
     const idle = s.employees.some((employee) => freeForActivity(employee, s.weekIndex))

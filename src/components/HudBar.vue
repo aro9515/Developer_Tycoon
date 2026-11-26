@@ -26,9 +26,22 @@ const year = computed(() => Math.floor((s.value.weekIndex - 1) / WEEKS_PER_YEAR)
       <span>연구 <b>{{ s.company.research }}</b></span>
     </div>
     <div class="controls">
-      <button class="btn ghost compact" type="button"  :disabled="Boolean(store.pendingScopeId)" @click="store.advance('day')">하루 진행</button>
-      <button class="btn ghost compact" type="button"  :disabled="Boolean(store.pendingScopeId)" @click="store.advance('week')">다음 주</button>
-      <button class="btn ghost compact" type="button"  :disabled="Boolean(store.pendingScopeId)" @click="store.setSpeed(s.speed ? 0 : 2)">{{ s.speed ? '일시정지' : '자동 진행 ×2' }}</button>
+      <button class="btn compact" type="button" :disabled="s.gameOver || Boolean(store.pendingScopeId)"
+        aria-describedby="week-advance-help" @click="store.advance('week')">1주 진행</button>
+      <button v-if="s.speed" class="btn ghost compact" type="button" @click="store.setSpeed(0)">일시정지</button>
+      <span id="week-advance-help" class="muted">다음 주 시작까지{{ s.dayOfWeek > 1 ? ' · 이번 주 남은 기간만' : '' }}</span>
     </div>
+    <details class="other-time-controls">
+      <summary>하루·자동 진행</summary>
+      <div class="controls">
+        <button class="btn ghost compact" type="button" :disabled="s.gameOver || Boolean(store.pendingScopeId)" @click="store.advance('day')">하루 진행</button>
+        <button v-if="!s.speed" class="btn ghost compact" type="button" :disabled="s.gameOver || Boolean(store.pendingScopeId)"
+          @click="store.setSpeed(2)">자동 진행 ×2</button>
+      </div>
+    </details>
   </header>
 </template>
+
+<style scoped>
+.other-time-controls .controls { margin-top: 0.4rem; }
+</style>

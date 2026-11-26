@@ -63,11 +63,12 @@ export function tickProject(project: Project, employees: Employee[]) {
   const mode = BALANCE.MODES[project.mode]
 
   if (project.state === 'inDev') {
-    const workFactor = (project.longContract?.workFactor ?? 1) * (project.acceptedOfferNegotiation?.workMultiplier ?? 1)
+    const baseWork = project.weeklyTerms?.workFactor ?? project.longContract?.workFactor ?? 1
+    const workFactor = baseWork * (project.acceptedOfferNegotiation?.workMultiplier ?? 1)
     const progressLimit = project.longContract && !project.longContract.middlePaid ? LONG_CONTRACT.checkpointProgress : 100
     const progressGain = BALANCE.BASE_PROGRESS * match * mode.progress / workFactor
     project.progress = clamp(project.progress + progressGain, 0, progressLimit)
-    project.bugs += BALANCE.BASE_BUG * mode.bug * (1 + project.difficulty * 0.08) / (project.longContract?.workFactor ?? 1)
+    project.bugs += BALANCE.BASE_BUG * mode.bug * (1 + project.difficulty * 0.08) / baseWork
     if (project.mode === 'speed') {
       dpGain += BALANCE.SPEED_DP_PER_TICK * project.difficulty * mode.debt
       heatGain += 0.35

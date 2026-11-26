@@ -35,10 +35,13 @@ function activityLabel(employee: Employee): string {
     </div>
 
     <p v-if="s.tutorialStep === 0" class="notice">
-      의뢰 탭에서 첫 외주에 담당자를 정하고 수락하세요. 하루 진행으로 작업을 보거나 다음 주를 눌러 정산까지 넘길 수 있습니다.
+      의뢰 탭에서 첫 외주 담당자를 정하고 수락하세요. 1주 진행을 누르면 다음 주 시작까지 진행합니다. 결정이 필요한 고객 요청이 오면 그 시점에 멈춥니다.
     </p>
     <div class="panel stack">
-      <h2>이번 주 배정</h2>
+      <div class="split">
+        <h2>이번 주 계획</h2>
+        <span class="muted">의뢰 배정 가능 {{ store.contractCandidates.length }}명 · 교육 가능 {{ store.freeEmployees.length }}명</span>
+      </div>
       <p v-for="e in s.employees" :key="e.id" class="split">
         <span><b>{{ e.name }}</b> · {{ ROLES[e.role] }}</span>
         <span class="muted">{{ activityLabel(e) }}</span>

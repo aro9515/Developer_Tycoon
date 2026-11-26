@@ -194,8 +194,14 @@ export function eligibleTrialCustomers(state: GameSnapshot): Customer[] {
 export function solutionRenewalReason(state: GameSnapshot, account: SolutionAccount): string {
   if (account.satisfaction < 45) return '만족도 45 필요'
   if (account.paidUntil > month(state) + 1 ||
-      (account.paidUntil === month(state) + 1 && (state.weekIndex - 1) % WEEKS_PER_MONTH < WEEKS_PER_MONTH - 2)) return '만료 월 마지막 2주에 갱신'
+      (account.paidUntil === month(state) + 1 && (state.weekIndex - 1) % WEEKS_PER_MONTH < WEEKS_PER_MONTH - 2)) {
+    return (account.paidUntil - 1) + '개월차 ' + (WEEKS_PER_MONTH - 1) + '주차부터 갱신'
+  }
   return ''
+}
+
+export function solutionRenewalChance(account: SolutionAccount, employee: Employee): number {
+  return clamp((account.satisfaction + employee.stats.communication * 0.5) / 95, 0.25, 1)
 }
 
 export function supportCapacity(employee: Employee): number {
@@ -260,8 +266,7 @@ function renewSolution(state: GameSnapshot, customer: Customer, employee: Employ
   if (!account || solutionRenewalReason(state, account)) return null
   employee.workedWeek = state.weekIndex
   // Strong support guarantees renewal. At lower satisfaction, the employee's sales skill still matters.
-  const renewChance = clamp((account.satisfaction + employee.stats.communication * 0.5) / 95, 0.25, 1)
-  if (random() >= renewChance) {
+  if (random() >= solutionRenewalChance(account, employee)) {
     account.satisfaction = clamp(account.satisfaction - 4, 0, 100)
     return result(0, 0, customer.name + ' · 갱신 보류')
   }

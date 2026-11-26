@@ -5,6 +5,7 @@ import type { EnterpriseState } from './enterprise'
 import type { GrowthState } from './growth'
 import type { LongContractOffer, LongContractProgress } from './longContracts'
 import type { AcceptedOfferNegotiation, OfferNegotiation } from './offerNegotiation'
+import type { WeeklyContractTerms } from './weeklyContracts'
 
 export type SpeedSetting = 0 | 1 | 2
 export type ProjectState = 'contracted' | 'inDev' | 'inTest' | 'deploying' | 'done' | 'failed' | 'canceled'
@@ -81,6 +82,7 @@ export interface Sales {
 }
 
 export interface MarketOffer {
+  weeklyTerms?: WeeklyContractTerms
   longContract?: LongContractOffer
   offerNegotiation?: OfferNegotiation
   customerId?: string
@@ -108,6 +110,7 @@ export interface RepairIssue {
 }
 
 export interface Project {
+  weeklyTerms?: WeeklyContractTerms
   longContract?: LongContractProgress
   acceptedOfferNegotiation?: AcceptedOfferNegotiation
   customerId?: string

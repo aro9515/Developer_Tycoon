@@ -4,8 +4,8 @@ import { useGameStore } from '@/stores/gameStore'
 import { gameMonth } from '@/core/customers'
 import {
   adChannels, automationCost, billingModels, customerProfile, eligibleTrialCustomers, enterpriseProgress,
-  marketEntryReason, quoteOutsourceCampaign, quoteSolutionCampaign, solutionMarkets, solutionPrices, solutionProject, solutionRenewalReason,
-  solutionSizes, supportCapacity, type AdChannel, type BillingModel, type ForeignMarket, type SolutionMarket, type SolutionSize,
+  marketEntryReason, quoteOutsourceCampaign, quoteSolutionCampaign, solutionMarkets, solutionPrices, solutionProject, solutionRenewalChance, solutionRenewalReason,
+  solutionSizes, supportCapacity, type AdChannel, type BillingModel, type ForeignMarket, type SolutionAccount, type SolutionMarket, type SolutionSize,
 } from '@/core/enterprise'
 import { BALANCE } from '@/data/balance'
 import { DOMAINS } from '@/data/rules'
@@ -21,7 +21,8 @@ const productRunning = computed(() => state.value.projects.some((project) =>
   project.isProduct && project.state !== 'failed' && project.state !== 'canceled'))
 const firstReady = computed(() => store.freeEmployees[0]?.id ?? '')
 const employee = ref('')
-const salesEmployee = computed(() => store.freeEmployees.some((entry) => entry.id === employee.value) ? employee.value : firstReady.value)
+const salesperson = computed(() => store.freeEmployees.find((entry) => entry.id === employee.value) ?? store.freeEmployees[0])
+const salesEmployee = computed(() => salesperson.value?.id ?? '')
 const selectedDomain = ref<keyof typeof DOMAINS>()
 const domain = computed(() => store.products.includes(selectedDomain.value!) ? selectedDomain.value : store.products[0])
 const developer = ref('')
@@ -50,6 +51,10 @@ const segment = (id: string) => {
   return solutionMarkets[profile.market].label + ' · ' + solutionSizes[profile.size]
 }
 const money = (value: number) => value.toLocaleString() + 'pt'
+function renewalBlock(account: SolutionAccount): string {
+  if (state.value.gameOver) return '진행이 종료되었습니다.'
+  return solutionRenewalReason(state.value, account) || (salesEmployee.value ? '' : '이번 주 배정 가능한 영업 담당자가 없습니다.')
+}
 function priceLabel(id: string, model: BillingModel): string {
   const { onboarding, monthly } = solutionPrices(state.value, id, model)
   return (onboarding ? '도입 ' + money(onboarding) + ' + ' : '') + '월 ' + money(monthly)
@@ -93,7 +98,8 @@ function priceLabel(id: string, model: BillingModel): string {
           <option v-for="entry in store.freeEmployees" :key="entry.id" :value="entry.id">{{ entry.name }}</option>
         </select>
       </label>
-      <p v-if="!salesEmployee" class="muted">이번 주 배정 가능한 직원이 없습니다.</p>
+      <p v-if="salesperson" class="muted">선택한 담당자 {{ salesperson.name }} · 커뮤니케이션 {{ salesperson.stats.communication.toFixed(1) }}</p>
+      <p v-else class="muted">이번 주 배정 가능한 직원이 없습니다.</p>
 
       <details open>
         <summary>시범 도입과 판매</summary>
@@ -125,9 +131,12 @@ function priceLabel(id: string, model: BillingModel): string {
           <div class="split"><strong>{{ name(account.customerId) }}</strong><span class="muted">{{ segment(account.customerId) }}</span></div>
           <p class="muted">{{ billingModels[account.model] }} · 월 {{ money(solutionPrices(state, account.customerId, account.model).monthly) }}</p>
           <p class="muted">{{ account.paidUntil > month ? (account.paidUntil - 1) + '개월차까지 납부' : '월 계약 만료' }} · 만족도 {{ account.satisfaction }}/100 · 미처리 {{ account.backlog }}건</p>
+          <p>성공 시 {{ money(solutionPrices(state, account.customerId, account.model).monthly) }} 수입
+            · {{ Math.max(account.paidUntil, month) }}개월차까지 연장</p>
           <div class="split">
-            <span class="muted">{{ solutionRenewalReason(state, account) || '영업 담당자 배정 가능' }}</span>
-            <button class="btn ghost compact" type="button" :disabled="!salesEmployee || !!solutionRenewalReason(state, account) || state.gameOver"
+            <span v-if="renewalBlock(account)" class="muted">{{ renewalBlock(account) }}</span>
+            <span v-else-if="salesperson" class="muted">갱신 성공 확률 {{ Math.floor(solutionRenewalChance(account, salesperson) * 100) }}%</span>
+            <button class="btn ghost compact" type="button" :disabled="!!renewalBlock(account)"
               @click="store.play(game => game.enterpriseAction({ type: 'renew', customerId: account.customerId, employeeId: salesEmployee }))">갱신 제안</button>
           </div>
         </article>

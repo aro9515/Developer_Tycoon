@@ -2,8 +2,8 @@ import { BALANCE } from '@/data/balance'
 import { rollMarketOffer } from './market'
 import { isActive } from './project'
 import type { Customer, GameSnapshot, MarketOffer, Project } from './types'
-
-const WEEK_TICKS = BALANCE.DAYS_PER_WEEK * BALANCE.TICKS_PER_DAY
+import { randInt } from './utils'
+import { plannedPersonWeeks, quoteWeeklyContract, WEEK_TICKS } from './weeklyContracts'
 const WORK_FACTOR = 5
 
 export const LONG_CONTRACT = {
@@ -53,12 +53,15 @@ export function createLongContractOffer(state: GameSnapshot): { offer: MarketOff
   const related = customer.nextFollowUp ?? recent
   const rolled = rollMarketOffer(state.company.trust, related)
   const requirements = rolled.requirements.map((requirement) => ({ ...requirement, amount: requirement.amount + 3 }))
-  const budget = Math.min(LONG_CONTRACT.maxBudget, LONG_CONTRACT.minBudget + (rolled.difficulty - 1) * 100 + requirements.length * 75)
+  const difficulty = Math.max(2, rolled.difficulty)
+  const contractWeeks = randInt(10, 12)
+  const personWeeks = plannedPersonWeeks(difficulty, requirements, true)
+  const quote = quoteWeeklyContract(requirements, difficulty, rolled.style, personWeeks, true)
   const offer: MarketOffer = {
-    ...rolled, requirements, budget, title: '3개월 · ' + rolled.title,
+    ...rolled, ...quote, requirements, title: '장기 · ' + rolled.title,
     client: customer.name, customerId: customer.id, source: 'followup',
-    difficulty: Math.max(2, rolled.difficulty), durationTicks: LONG_CONTRACT.durationTicks,
-    longContract: { workFactor: LONG_CONTRACT.workFactor, workDays: LONG_CONTRACT.workDays },
+    difficulty, durationTicks: contractWeeks * WEEK_TICKS,
+    longContract: { workFactor: quote.weeklyTerms.workFactor, workDays: quote.weeklyTerms.personWeeks * BALANCE.DAYS_PER_WEEK },
   }
   state.market.push(offer)
   customer.lastOfferTick = state.tick

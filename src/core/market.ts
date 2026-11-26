@@ -2,6 +2,7 @@ import { BALANCE } from '@/data/balance'
 import { CLIENT_STYLES, type ClientStyle } from '@/data/rules'
 import type { MarketOffer, Requirement } from './types'
 import { pick, randInt, uid } from './utils'
+import { plannedPersonWeeks, quoteWeeklyContract, shortDeadlineWeeks, WEEK_TICKS } from './weeklyContracts'
 
 type Work = Pick<MarketOffer, 'title' | 'domain' | 'technology' | 'alternatives' | 'requirements'>
 
@@ -24,18 +25,17 @@ const ADVANCED_WORK: Work[] = [
 const CLIENTS = ['김사장', '박팀장', '이대표', '최실장', '한매니저', '윤원장']
 
 export function createForcedOffer(): MarketOffer {
+  const requirements: Requirement[] = [{ skill: 'frontend', amount: 12 }, { skill: 'coding', amount: 10 }]
   return {
     id: uid('offer'), title: '첫 외주 · 명함 사이트', client: '고모님 지인',
-    difficulty: 1, budget: 150, durationTicks: 38, bugTolerance: 25,
-    requirements: [{ skill: 'frontend', amount: 12 }, { skill: 'coding', amount: 10 }],
+    difficulty: 1, ...quoteWeeklyContract(requirements, 1, 'stable', 0.7), durationTicks: 2 * WEEK_TICKS, bugTolerance: 25,
+    requirements,
     technology: 'javascript', alternatives: [], domain: 'operations', style: 'stable', forced: true,
   }
 }
 
 export function rollMarketOffer(trust: number, related?: Pick<MarketOffer, 'domain' | 'technology'>): MarketOffer {
   const difficulty = trust < 20 ? 1 : trust < 40 ? randInt(1, 2) : randInt(2, 3)
-  const budgets = [[100, 220], [220, 360], [350, 550]] as const
-  const [min, max] = budgets[difficulty - 1] ?? budgets[0]
   const style = pick(Object.keys(CLIENT_STYLES) as ClientStyle[])
   const pool = trust < 25 ? WORK : [...WORK, ...ADVANCED_WORK]
   const relevant = related ? pool.filter((work) => work.domain === related.domain) : pool
@@ -46,7 +46,8 @@ export function rollMarketOffer(trust: number, related?: Pick<MarketOffer, 'doma
   }))
   return {
     ...work, requirements, style, id: uid('offer'), client: pick(CLIENTS), difficulty,
-    budget: randInt(min, max), durationTicks: difficulty * 30 + (style === 'urgent' ? 0 : 16),
+    ...quoteWeeklyContract(requirements, difficulty, style, plannedPersonWeeks(difficulty, requirements)),
+    durationTicks: shortDeadlineWeeks(difficulty, style) * WEEK_TICKS,
     bugTolerance: [25, 20, 15][difficulty - 1] ?? 25,
   }
 }
