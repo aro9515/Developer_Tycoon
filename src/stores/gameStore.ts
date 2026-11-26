@@ -1,55 +1,61 @@
 import { defineStore } from 'pinia'
-import { computed, ref, shallowRef } from 'vue'
-import { BALANCE, type WorkMode } from '@/data/balance'
-import { Game } from '@/core/Game'
-import { clearSave, loadFromLocal, newGame, saveToLocal } from '@/core/save'
+import { computed, ref } from 'vue'
+import { BALANCE } from '@/data/balance'
+import { companyCapacity, freeForActivity, freeForContract, pendingScopeProject, productDomains, type Game } from '@/core/Game'
+import { isActive } from '@/core/project'
+import { newGame } from '@/core/save'
+import { createPlaytestSync } from '@/core/playtestSync'
 import type { GameSnapshot, SpeedSetting } from '@/core/types'
 
 export type TabId = 'office' | 'market' | 'projects' | 'staff'
 
 export const useGameStore = defineStore('game', () => {
-  const game = shallowRef<Game>(loadFromLocal() ?? newGame())
-  const snapshot = ref<GameSnapshot>(structuredClone(game.value.getSnapshot()))
-  const activeTab = ref<TabId>('market')
+  const saving = createPlaytestSync((next) => {
+    game = next
+    game.setSpeed(0)
+    acc = 0
+    sync()
+  })
+  let game = saving.initial ?? newGame()
+  game.setSpeed(0)
+  const snapshot = ref<GameSnapshot>(structuredClone(game.getSnapshot()))
+  const activeTab = ref<TabId>(pendingScopeProject(snapshot.value) ? 'projects' : 'office')
   let raf = 0
   let acc = 0
   let last = 0
-  let saveAcc = 0
 
   function sync(): void {
-    snapshot.value = structuredClone(game.value.getSnapshot())
+    snapshot.value = structuredClone(game.getSnapshot())
+    if (pendingScopeProject(snapshot.value)) activeTab.value = 'projects'
   }
 
-  function persist(): void {
-    saveToLocal(game.value)
-  }
-
-  function dispatchSync(fn: () => void): void {
-    fn()
+  function commit(): void {
     sync()
-    persist()
+    saving.capture(game, game.drainEvents())
+  }
+
+  function play<T>(action: (current: Game) => T): T {
+    const result = action(game)
+    commit()
+    return result
   }
 
   function startLoop(): void {
     stopLoop()
     last = performance.now()
     const loop = (now: number) => {
-      const dt = now - last
+      const dt = Math.min(now - last, 200)
       last = now
       const speed = snapshot.value.speed
       if (speed > 0 && !snapshot.value.gameOver) {
         acc += dt * speed
-        const step = BALANCE.MS_PER_TICK_1X
-        while (acc >= step) {
-          acc -= step
-          game.value.tick()
+        let ticked = false
+        while (acc >= BALANCE.MS_PER_TICK_1X && game.state.speed > 0) {
+          acc -= BALANCE.MS_PER_TICK_1X
+          game.tick()
+          ticked = true
         }
-        sync()
-        saveAcc += dt
-        if (saveAcc > 15000) {
-          saveAcc = 0
-          persist()
-        }
+        if (ticked) commit()
       }
       raf = requestAnimationFrame(loop)
     }
@@ -62,53 +68,43 @@ export const useGameStore = defineStore('game', () => {
   }
 
   function setSpeed(speed: SpeedSetting): void {
-    dispatchSync(() => game.value.setSpeed(speed))
+    acc = 0
+    play((current) => current.setSpeed(speed))
   }
 
-  function acceptOffer(id: string): void {
-    dispatchSync(() => {
-      if (game.value.acceptOffer(id)) activeTab.value = 'projects'
-    })
+  function advance(period: 'day' | 'week'): void {
+    acc = 0
+    play((current) => current.advance(period))
   }
 
-  function assignToProject(employeeId: string, projectId: string | null): void {
-    dispatchSync(() => game.value.assignEmployee(employeeId, projectId))
+  function acceptOffer(id: string, employeeId: string, technology: string): void {
+    if (play((current) => current.acceptOffer(id, employeeId, technology))) activeTab.value = 'projects'
   }
 
-  function setMode(projectId: string, mode: WorkMode): void {
-    dispatchSync(() => game.value.setProjectMode(projectId, mode))
-  }
-
-  function dismissResult(): void {
-    dispatchSync(() => game.value.dismissResult())
-  }
+  function dismissResult(): void { play((current) => current.dismissResult()) }
 
   function restart(): void {
-    clearSave()
-    game.value = newGame()
+    game = newGame()
+    acc = 0
+    activeTab.value = 'office'
     sync()
-    activeTab.value = 'market'
+    saving.capture(game, [{ action: 'reset', result: 'started', tick: 0, day: 1, week: 1 }], true)
   }
 
-  const cash = computed(() => snapshot.value.company.cash)
-  const activeProjects = computed(() =>
-    snapshot.value.projects.filter((p) => !['done', 'failed'].includes(p.state)),
-  )
+  const pendingScopeId = computed(() => pendingScopeProject(snapshot.value)?.id)
+  const activeProjects = computed(() => snapshot.value.projects.filter(isActive))
+  const freeEmployees = computed(() => snapshot.value.employees.filter((employee) => freeForActivity(employee, snapshot.value.weekIndex)))
+  const contractCandidates = computed(() => snapshot.value.employees.filter((employee) => freeForContract(employee, snapshot.value.weekIndex)))
+  const stage = computed(() => companyCapacity(snapshot.value))
+  const products = computed(() => productDomains(snapshot.value.projects))
 
   return {
-    snapshot,
-    activeTab,
-    cash,
-    activeProjects,
-    startLoop,
-    stopLoop,
-    setSpeed,
-    acceptOffer,
-    assignToProject,
-    setMode,
-    dismissResult,
-    restart,
-    persist,
-    sync,
+    snapshot, activeTab, activeProjects, pendingScopeId, freeEmployees, contractCandidates, stage, products,
+    saveStatus: saving.status, saveReady: saving.ready, saveRevision: saving.revision,
+    savedAt: saving.savedAt, storageAvailable: saving.storageAvailable, hasOriginal: saving.hasOriginal,
+    hasDraft: saving.hasDraft, serverConflict: saving.latest, recoveryBackups: saving.backups,
+    startLoop, stopLoop, setSpeed, advance, acceptOffer, dismissResult, restart, play,
+    connectSave: saving.connect, persist: saving.persistLocal, useServerSave: saving.useServer, downloadSave: saving.download,
+    migrateSave: () => saving.migrate(game), restoreLocalSave: () => saving.restoreLocal(game),
   }
 })

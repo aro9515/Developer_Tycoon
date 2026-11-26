@@ -1,133 +1,81 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { freeForContract } from '@/core/Game'
 import { useGameStore } from '@/stores/gameStore'
+import SalesPanel from '@/components/SalesPanel.vue'
+import EnterprisePanel from '@/components/EnterprisePanel.vue'
+import GrowthPanel from '@/components/GrowthPanel.vue'
+import { ITEMS, ROLES, SHOP, techName } from '@/data/rules'
+import type { Employee } from '@/core/types'
 
 const store = useGameStore()
 const s = computed(() => store.snapshot)
-const player = computed(() => s.value.employees.find((e) => e.isPlayer))
-const active = computed(() => store.activeProjects)
+const confirmReset = ref(false)
+
+function activityLabel(employee: Employee): string {
+  const support = s.value.enterprise.support
+  if (support.week === s.value.weekIndex && support.employeeIds.includes(employee.id)) return '솔루션 고객 지원'
+  if (employee.assignedProjectId) return s.value.projects.find((p) => p.id === employee.assignedProjectId)?.title ?? '계약 수행'
+  const activity = employee.activity
+  if (activity?.kind === 'repair') return '유지보수'
+  if (activity) return techName(activity.target) + (activity.kind === 'pilot' ? ' 파일럿' : ' 교육')
+  if (employee.workedWeek !== s.value.weekIndex) return '배정 가능'
+  return freeForContract(employee, s.value.weekIndex) ? '다른 의뢰 배정 가능' : '이번 주 작업 종료'
+}
 </script>
 
 <template>
-  <section class="office">
-    <div class="hero panel">
-      <p class="eyebrow">{{ s.company.name }}</p>
-      <h1>작은 책상 하나에서 시작</h1>
-      <p class="muted">
-        의뢰를 받고, 나를 배치하고, 시간이 흐르면 돈이 들어옵니다.
+  <section class="stack">
+    <div class="split">
+      <div>
+        <p class="muted">{{ store.stage.name }}</p>
+        <h1>{{ s.company.name }}</h1>
+      </div>
+      <p class="muted">직원 {{ s.employees.length }}/{{ store.stage.hires }} · 계약 {{ store.activeProjects.length }}/{{ s.company.projectSlots }}</p>
+    </div>
+
+    <p v-if="s.tutorialStep === 0" class="notice">
+      의뢰 탭에서 첫 외주에 담당자를 정하고 수락하세요. 하루 진행으로 작업을 보거나 다음 주를 눌러 정산까지 넘길 수 있습니다.
+    </p>
+    <div class="panel stack">
+      <h2>이번 주 배정</h2>
+      <p v-for="e in s.employees" :key="e.id" class="split">
+        <span><b>{{ e.name }}</b> · {{ ROLES[e.role] }}</span>
+        <span class="muted">{{ activityLabel(e) }}</span>
       </p>
     </div>
 
-    <div class="room panel">
-      <div class="desk">
-        <div class="monitor" />
-        <div class="person">{{ player?.name ?? '나' }}</div>
-        <p class="muted">
-          {{
-            player?.assignedProjectId
-              ? '코딩 중…'
-              : active.length
-                ? '배치 대기'
-                : '한가함'
-          }}
-        </p>
-      </div>
-      <div class="stats">
-        <div>
-          <strong>{{ active.length }}</strong>
-          <span class="muted">진행 중</span>
-        </div>
-        <div>
-          <strong>{{ s.market.length }}</strong>
-          <span class="muted">시장 의뢰</span>
-        </div>
-        <div>
-          <strong>{{ Math.floor(s.company.dp) }}</strong>
-          <span class="muted">기술부채</span>
-        </div>
-      </div>
+    <SalesPanel />
+    <GrowthPanel />
+
+    <div class="panel stack" aria-label="운영 기록">
+      <h2>운영 기록</h2>
+      <ol class="event-list">
+        <li v-for="event in s.toasts" :key="event.id">{{ event.text }}</li>
+      </ol>
     </div>
 
-    <div v-if="s.tutorialStep < 3" class="hint panel">
-      <strong>튜토리얼</strong>
-      <p v-if="s.tutorialStep === 0" class="muted">1) 시장에서 첫 외주를 수락하세요.</p>
-      <p v-else-if="s.tutorialStep === 1" class="muted">2) 프로젝트에 나를 배치하세요.</p>
-      <p v-else class="muted">3) 완료될 때까지 배속으로 기다려 보세요.</p>
+    <div class="panel stack">
+      <h2>복지·교육 상점</h2>
+      <div v-for="item in ITEMS" :key="item" class="split shop-item">
+        <div><b>{{ SHOP[item].label }}</b><p class="muted">{{ SHOP[item].effect }} · 보유 {{ s.company.inventory[item] }}</p></div>
+        <button class="btn ghost compact" type="button" :disabled="(item === 'voucher' && !s.company.shopStock.voucher) || s.company.cash < SHOP[item].price"
+          @click="store.play(game => game.buyItem(item))">
+          {{ item === 'voucher' && !s.company.shopStock.voucher ? '품절' : '구매 ₩' + SHOP[item].price }}
+        </button>
+      </div>
+      <p class="muted">구매한 아이템은 직원 탭에서 사용합니다.</p>
+    </div>
+
+    <EnterprisePanel />
+
+    <div class="controls">
+      <button v-if="!confirmReset" type="button" class="btn ghost compact" @click="confirmReset = true">새 게임</button>
+      <template v-else>
+        <span class="muted">이 브라우저의 진행 상황을 초기화합니다.</span>
+        <button type="button" class="btn danger compact" @click="store.restart(); confirmReset = false">초기화</button>
+        <button type="button" class="btn ghost compact" @click="confirmReset = false">취소</button>
+      </template>
     </div>
   </section>
 </template>
-
-<style scoped>
-.office {
-  display: grid;
-  gap: 12px;
-}
-
-.eyebrow {
-  margin: 0 0 4px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-
-h1 {
-  margin: 0 0 8px;
-  font-size: 24px;
-  line-height: 1.25;
-}
-
-.room {
-  min-height: 220px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.5), transparent 40%),
-    repeating-linear-gradient(
-      90deg,
-      #f3f7fb 0 18px,
-      #eaf1f7 18px 36px
-    );
-}
-
-.desk {
-  margin: 24px auto 16px;
-  width: 180px;
-  text-align: center;
-}
-
-.monitor {
-  height: 72px;
-  border-radius: 10px 10px 4px 4px;
-  background: linear-gradient(180deg, #243246, #1a2332);
-  box-shadow: inset 0 0 0 3px #4b5b70;
-  margin-bottom: 10px;
-}
-
-.person {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: #ffe8c7;
-  border: 3px solid #e0b57a;
-  font-weight: 800;
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  text-align: center;
-}
-
-.stats strong {
-  display: block;
-  font-size: 20px;
-}
-
-.hint strong {
-  display: block;
-  margin-bottom: 4px;
-}
-</style>

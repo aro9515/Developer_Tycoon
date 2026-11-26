@@ -1,97 +1,147 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useGameStore } from '@/stores/gameStore'
+import { freeForActivity, freeForContract } from '@/core/Game'
+import { canChangeRole, canLevelUpRole, HIRE_COST, nextRoleTarget, roleLevel, salaryReviewDue } from '@/core/staff'
+import { ADVANCED_ROLES, BASE_ROLES, DOMAINS, ITEMS, ROLES, MAX_ROLE_LEVEL, ROLE_REQUIREMENTS, SHOP, SKILLS, TRAINING_COURSES, tech, techName, trainingCourse, type Role } from '@/data/rules'
+import type { Employee } from '@/core/types'
 
 const store = useGameStore()
 const s = computed(() => store.snapshot)
-
-function projectTitle(id: string | null): string {
-  if (!id) return '대기 중'
-  return s.value.projects.find((p) => p.id === id)?.title ?? '배치됨'
+const selection = ref<Record<string, string>>({})
+const salaries = ref<Record<string, number>>({})
+const roleOptions = [...BASE_ROLES, ...ADVANCED_ROLES]
+const course = (employee: Employee) => selection.value[employee.id] ?? 'javascript'
+const ready = (employee: Employee) => freeForActivity(employee, s.value.weekIndex)
+const salary = (e: Employee) => salaries.value[e.id] ?? e.desiredSalary
+const allowedTechnology = (key: string) => !tech(key)?.expansion || store.stage.deliveries >= 4
+const pilotReady = (e: Employee, key: string) => {
+  const entry = tech(key)
+  return entry ? e.stats[entry.skill] >= 20 && !s.value.company.validated.includes(key) && allowedTechnology(key) &&
+    !s.value.employees.some((member) => member.activity?.kind === 'pilot' && member.activity.target === key) : false
+}
+function requirementGroups(role: Role) {
+  const advanced = ADVANCED_ROLES.find((candidate) => candidate === role)
+  return advanced ? ROLE_REQUIREMENTS[advanced] : []
+}
+function displayRoleXp(employee: Employee, role: Role): string {
+  return (Math.floor((employee.roleXp[role] ?? 0) * 10) / 10).toFixed(1)
+}
+function alertLevel(weeks: number): string {
+  return weeks >= 6 ? '퇴사 의사 · 이번 주 대응 필요' : weeks >= 4 ? '면담 요청' : '불만 알림'
 }
 </script>
 
 <template>
-  <section class="staff">
-    <h2>직원</h2>
-    <article v-for="e in s.employees" :key="e.id" class="card panel">
-      <div class="top">
-        <div>
-          <h3>{{ e.name }} <span v-if="e.isPlayer" class="tag">플레이어</span></h3>
-          <p class="muted">{{ projectTitle(e.assignedProjectId) }}</p>
+  <section class="stack">
+    <div class="split"><h1>직원</h1><span class="muted">{{ s.employees.length }}/{{ store.stage.hires }}명</span></div>
+    <details class="panel">
+      <summary>채용 · 계약비 ₩{{ HIRE_COST }}</summary>
+      <div class="controls">
+        <button v-for="role in BASE_ROLES" :key="role" type="button" class="btn ghost compact"
+          :disabled="s.employees.length >= store.stage.hires || s.company.cash < HIRE_COST"
+          @click="store.play(game => game.hireEmployee(role))">{{ ROLES[role] }}</button>
+      </div>
+    </details>
+
+    <article v-for="e in s.employees" :key="e.id" class="panel stack">
+      <div class="split"><h2>{{ e.name }} · {{ ROLES[e.role] }} Lv.{{ roleLevel(e) }}</h2><span v-if="e.isPlayer" class="tag">대표</span></div>
+      <p class="muted">체력 {{ Math.floor(e.stamina) }} · 스트레스 {{ Math.floor(e.stress) }}/{{ e.workloadLimit }} · 주급 ₩{{ e.salary }}</p>
+      <p v-if="e.assignedProjectId">{{ s.projects.find(p => p.id === e.assignedProjectId)?.title ?? '프로젝트' }}{{ e.handover ? ' · 인수인계' : '' }}</p>
+      <p v-else-if="s.enterprise.support.week === s.weekIndex && s.enterprise.support.employeeIds.includes(e.id)">솔루션 고객 지원 중</p>
+      <p v-else-if="e.activity?.kind === 'repair'">유지보수 중</p>
+      <p v-else-if="e.activity">{{ techName(e.activity.target) }} {{ e.activity.kind === 'pilot' ? '파일럿' : '교육' }} · {{ Math.floor(e.activity.progress / e.activity.duration * 100) }}%</p>
+      <p v-else class="muted">{{ ready(e) ? '이번 주 배정 가능' : freeForContract(e, s.weekIndex) ? '다른 의뢰 배정 가능' : '이번 주 활동 종료' }}</p>
+
+      <div v-if="e.complaints.salary >= 2 || e.complaints.balance >= 2" class="notice warn">
+        <p v-if="e.complaints.salary >= 2">급여 {{ alertLevel(e.complaints.salary) }} · 희망 주급 ₩{{ e.desiredSalary }}</p>
+        <p v-if="e.complaints.balance >= 2">워라밸 {{ alertLevel(e.complaints.balance) }} · 긴급 업무나 스피드 배정을 줄이세요.</p>
+      </div>
+      <div v-if="salaryReviewDue(e, s.weekIndex)" class="notice stack">
+        <strong>입사 기념 연봉협상</strong>
+        <p>희망 연봉 ₩{{ (e.desiredSalary * 48).toLocaleString() }} · 현재 주급 ₩{{ e.salary }}</p>
+        <label>제안 주급
+          <input type="number" :min="e.salary" :value="salary(e)" @input="salaries[e.id] = ($event.target as HTMLInputElement).valueAsNumber" />
+        </label>
+        <div class="controls">
+          <button type="button" class="btn compact" :disabled="!Number.isSafeInteger(salary(e)) || salary(e) < e.salary"
+            @click="store.play(game => game.negotiateSalary(e.id, salary(e)))">연봉 제안</button>
+          <button type="button" class="btn ghost compact" @click="store.play(game => game.negotiateSalary(e.id, e.salary))">현재 연봉 유지</button>
         </div>
-        <div class="avatar">{{ e.name.slice(0, 1) }}</div>
       </div>
 
-      <div class="bars">
-        <div>
-          <span class="muted">체력 {{ e.stamina }}</span>
-          <div class="progress"><span :style="{ width: `${e.stamina}%` }" /></div>
-        </div>
-        <div>
-          <span class="muted">스트레스 {{ e.stress }}</span>
-          <div class="progress stress"><span :style="{ width: `${e.stress}%` }" /></div>
-        </div>
-      </div>
+      <details>
+        <summary>능력치·노하우</summary>
+        <p class="controls"><span v-for="(label, key) in SKILLS" :key="key" class="tag">{{ label }} {{ e.stats[key].toFixed(1) }}</span></p>
+        <p class="controls"><span v-for="(value, key) in e.stackXp" :key="key" class="tag">{{ techName(String(key)) }} {{ value.toFixed(1) }}</span></p>
+        <p class="controls"><span v-for="(value, key) in e.domainXp" :key="key" class="tag">{{ DOMAINS[key] }} {{ value?.toFixed(1) }}</span></p>
+      </details>
 
-      <div class="stats">
-        <span>코딩 {{ e.stats.coding }}</span>
-        <span>FE {{ e.stats.frontend }}</span>
-        <span>BE {{ e.stats.backend }}</span>
-        <span>DB {{ e.stats.database }}</span>
-      </div>
+      <details>
+        <summary>교육·신기술 파일럿</summary>
+        <label>기술
+          <select aria-label="교육 기술" :value="course(e)" @change="selection[e.id] = ($event.target as HTMLSelectElement).value">
+            <option v-for="entry in TRAINING_COURSES" :key="entry.key" :value="entry.key" :disabled="!allowedTechnology(entry.key)">
+              {{ entry.name }}{{ allowedTechnology(entry.key) ? '' : ' · 성장 단계 필요' }}
+            </option>
+          </select>
+        </label>
+        <p class="muted">교육 3일 · 파일럿 4일, {{ SKILLS[trainingCourse(course(e))?.skill ?? 'coding'] }} 20 필요</p>
+        <div class="controls">
+          <button type="button" class="btn ghost compact" :disabled="!ready(e)" @click="store.play(game => game.startTraining(e.id, course(e)))">교육 배정</button>
+          <button type="button" class="btn ghost compact" :disabled="!ready(e) || !pilotReady(e, course(e))"
+            @click="store.play(game => game.startTraining(e.id, course(e), true))">파일럿 배정</button>
+        </div>
+      </details>
+
+      <details>
+        <summary>직위·전직</summary>
+        <div class="controls">
+          <span>누적 XP {{ displayRoleXp(e, e.role) }} · {{ nextRoleTarget(e) === undefined ? '최고 레벨' : '다음 레벨 ' + nextRoleTarget(e) + ' XP' }}</span>
+          <button class="btn ghost compact" type="button" :disabled="s.gameOver || !canLevelUpRole(e)"
+            @click="store.play(game => game.levelUpRole(e.id))">레벨업</button>
+        </div>
+        <div v-for="role in roleOptions" :key="role" class="split">
+          <div>
+            <span>{{ ROLES[role] }}</span>
+            <small v-if="e.roleLevels[role] !== undefined || e.roleXp[role] !== undefined">
+              · Lv.{{ roleLevel(e, role) }} · {{ displayRoleXp(e, role) }} XP
+            </small>
+            <div v-if="e.roleLevels[role] === undefined && requirementGroups(role).length" class="role-requirements muted"
+              :id="e.id + '-role-requirements-' + role">
+              <div v-for="(group, index) in requirementGroups(role)" :key="index" class="role-requirement-group">
+                <small v-if="index > 0">또는</small>
+                <small v-for="(base, position) in group" :key="base">
+                  {{ position > 0 ? '+ ' : '' }}{{ ROLES[base] }} 현재 Lv.{{ roleLevel(e, base) }} / 필요 Lv.{{ MAX_ROLE_LEVEL }}
+                </small>
+              </div>
+            </div>
+          </div>
+          <button class="btn ghost compact" type="button" :disabled="s.gameOver || !canChangeRole(e, role)"
+            :aria-label="ROLES[role] + (e.role === role ? ' 현재' : ' 전직')"
+            :aria-describedby="e.roleLevels[role] === undefined && requirementGroups(role).length ? e.id + '-role-requirements-' + role : undefined"
+            @click="store.play(game => game.changeRole(e.id, role))">{{ e.role === role ? '현재' : '전직' }}</button>
+        </div>
+      </details>
+
+      <details v-if="ITEMS.some(item => s.company.inventory[item])">
+        <summary>아이템 사용</summary>
+        <div class="controls">
+          <button v-for="item in ITEMS" :key="item" class="btn ghost compact" type="button"
+            :disabled="!s.company.inventory[item] || e.itemWeek[item] === s.weekIndex || (item === 'voucher' && (e.activity?.kind !== 'training' || !tech(e.activity.target)))"
+            @click="store.play(game => game.useItem(e.id, item))">{{ SHOP[item].label }} ({{ s.company.inventory[item] }})</button>
+        </div>
+      </details>
     </article>
   </section>
 </template>
 
 <style scoped>
-.staff {
+.role-requirements, .role-requirement-group {
   display: grid;
-  gap: 12px;
+  gap: 2px;
 }
-
-h2,
-h3 {
-  margin: 0;
-}
-
-.card {
-  display: grid;
-  gap: 12px;
-}
-
-.top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: #ffe8c7;
-  border: 2px solid #e0b57a;
-  font-weight: 800;
-}
-
-.bars {
-  display: grid;
-  gap: 8px;
-}
-
-.progress.stress > span {
-  background: linear-gradient(90deg, #f0a202, #b42318);
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
+.role-requirements {
+  margin-top: 4px;
 }
 </style>
